@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MountainCar RL Pipeline</title>
+  <meta name="description"
+    content="End-to-end off-policy Monte Carlo reinforcement learning pipeline for the MountainCar environment. Collect data, build a Q-table, train with importance sampling, and test the policy — all in your browser." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="./src/ui/styles.css" />
+</head>
+
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <!-- Sticky checkpoint/control bar -->
+  <div id="pipeline-bar">
+    <div class="pipeline-bar-inner">
+      <span class="bar-title">MountainCar RL Pipeline</span>
+      <div class="bar-actions">
+        <button id="saveEpisodesBtn" class="bar-btn" disabled title="Available after data collection">
+          ↓ Save Trajectories
+        </button>
+        <button id="saveQTableBtn" class="bar-btn" disabled title="Available after training">
+          ↓ Save Q-Table
+        </button>
+        <label class="bar-file-label" title="Load previously saved trajectories (skips Step 1)">
+          ↑ Load Trajectories
+          <input id="loadEpisodesFile" type="file" accept=".json,application/json" />
+        </label>
+        <label class="bar-file-label" title="Load previously saved Q-table (skips Steps 1–3)">
+          ↑ Load Q-Table
+          <input id="loadQTableFile" type="file" accept=".json,application/json" />
+        </label>
+      </div>
+      <div id="pipelineStatusBadge" class="pipeline-badge">Idle</div>
+    </div>
+  </div>
+
+  <main class="layout">
+    <!-- Intro -->
+    <section class="card intro">
+      <h1>MountainCar Off-Policy RL Pipeline</h1>
+      <p>
+        Collect experience with a behavior policy, initialize a Q-table, train with
+        off-policy importance sampling, then evaluate the greedy target policy — step by step.
+      </p>
+    </section>
+
+    <!-- ── STEP 1: Data Collection ── -->
+    <section id="section-collect" class="card pipeline-section step-1">
+      <div class="section-header">
+        <span class="step-badge">Step 1</span>
+        <h2>Data Collection</h2>
+        <span id="collectStatusBadge" class="section-badge">Idle</span>
+      </div>
+
+      <div class="section-body">
+        <!-- Left column: controls -->
+        <div class="collect-controls">
+          <h3>Behavior Policy</h3>
+          <div class="grid">
+            <label>
+              Policy
+              <select id="collectPolicy">
+                <option value="mixture">mixture</option>
+                <option value="random">random</option>
+              </select>
+            </label>
+            <label>
+              p_smart (mixture)
+              <input id="pSmart" type="number" min="0" max="1" step="0.05" value="0.5" />
+            </label>
+            <label>
+              Target Episodes
+              <input id="episodesTarget" type="number" min="1" value="3500" />
+            </label>
+            <label>
+              Max Steps / Episode
+              <input id="maxSteps" type="number" min="1" value="200" />
+            </label>
+            <label>
+              Speed (steps/frame)
+              <input id="stepsPerFrame" type="range" min="1" max="120" value="8" />
+              <span id="stepsPerFrameLabel">8</span>
+            </label>
+            <label>
+              Seed (optional)
+              <input id="seed" type="number" step="1" placeholder="e.g. 42" />
+            </label>
+          </div>
+          <div class="btn-row">
+            <button id="startCollectBtn">▶ Start Collection</button>
+            <button id="pauseCollectBtn" class="btn-secondary">⏸ Pause</button>
+            <button id="resetCollectBtn" class="btn-danger">↺ Reset</button>
+          </div>
+        </div>
+
+        <!-- Right column: canvas + heatmap -->
+        <div class="collect-vis">
+          <canvas id="envCanvas" width="900" height="520"></canvas>
+          <p class="caption">Action: <strong>0</strong> left · <strong>1</strong> coast · <strong>2</strong> right</p>
+          <canvas id="heatmapCanvas" width="300" height="300"></canvas>
+          <p class="caption">State visitation heatmap (x = position bin, y = velocity bin)</p>
+        </div>
+      </div>
+
+      <!-- Collection metrics -->
+      <div class="metrics-panel">
+        <h3>Collection Metrics</h3>
+        <div class="metrics-grid">
+          <div><span>Episodes</span><strong id="mEpisodes">0</strong></div>
+          <div><span>Successes</span><strong id="mSuccesses">0</strong></div>
+          <div><span>Success rate</span><strong id="mSuccessRate">0.00%</strong></div>
+          <div><span>Avg return</span><strong id="mAvgReturn">0.00</strong></div>
+          <div><span>Avg length</span><strong id="mAvgLength">0.00</strong></div>
+          <div><span>Cur step</span><strong id="mCurStep">0</strong></div>
+          <div><span>Cur return</span><strong id="mCurReturn">0.00</strong></div>
+          <div><span>Last action</span><strong id="mLastAction">-</strong></div>
+          <div><span>Behavior prob</span><strong id="mBehaviorProb">-</strong></div>
+          <div><span>Position</span><strong id="mPosition">-</strong></div>
+          <div><span>Velocity</span><strong id="mVelocity">-</strong></div>
+          <div><span>Discrete state</span><strong id="mState">-</strong></div>
+          <div><span>Action 0 (←)</span><strong id="mA0">0</strong></div>
+          <div><span>Action 1 (·)</span><strong id="mA1">0</strong></div>
+          <div><span>Action 2 (→)</span><strong id="mA2">0</strong></div>
+          <div><span>Status</span><strong id="mCollectStatus">Idle</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── STEP 2: Build Q-Table ── -->
+    <section id="section-qtable" class="card pipeline-section step-2 section-locked">
+      <div class="section-header">
+        <span class="step-badge">Step 2</span>
+        <h2>Build Q-Table</h2>
+        <span id="qInitStatusBadge" class="section-badge">Waiting for Step 1</span>
+      </div>
+      <div class="section-body">
+        <div class="grid tight-grid">
+          <label>
+            Discretization Bins
+            <input id="nBins" type="number" min="2" value="20" />
+          </label>
+          <label>
+            Discount Factor γ
+            <input id="gamma" type="number" min="0" max="1" step="0.01" value="0.99" />
+          </label>
+        </div>
+        <div class="btn-row">
+          <button id="initQTableBtn" disabled>⚙ Initialize Q-Table</button>
+        </div>
+        <p id="qInitStatus" class="status">-</p>
+      </div>
+    </section>
+
+    <!-- ── STEP 3: Train Model ── -->
+    <section id="section-train" class="card pipeline-section step-3 section-locked">
+      <div class="section-header">
+        <span class="step-badge">Step 3</span>
+        <h2>Train Model</h2>
+        <span id="trainStatusBadge" class="section-badge">Waiting for Step 2</span>
+      </div>
+      <div class="section-body">
+        <div class="progress-group">
+          <label class="progress-label">Pass 1 — Ordinary MC <span id="pass1Pct">0%</span></label>
+          <progress id="pass1Progress" value="0" max="100"></progress>
+        </div>
+        <div class="progress-group">
+          <label class="progress-label">Pass 2 — Weighted IS <span id="pass2Pct">0%</span></label>
+          <progress id="pass2Progress" value="0" max="100"></progress>
+        </div>
+        <div class="btn-row">
+          <button id="startTrainBtn" disabled>▶ Start Training</button>
+        </div>
+        <textarea id="trainLog" class="train-log" readonly placeholder="Training log will appear here…"></textarea>
+        <p id="trainStatus" class="status">-</p>
+
+        <!-- Q-value visualizations revealed after training -->
+        <div id="qVizPanel" class="q-viz-panel hidden">
+          <h3>Q-Table Visualizations</h3>
+          <div class="q-viz-canvases">
+            <div class="q-viz-item">
+              <p class="q-viz-title">Max Q-Value per State</p>
+              <canvas id="qValueCanvas" width="420" height="420"></canvas>
+              <p class="caption">Indigo = low value · Yellow-green = high value</p>
+            </div>
+            <div class="q-viz-item">
+              <p class="q-viz-title">Greedy Action Map</p>
+              <canvas id="greedyMapCanvas" width="420" height="420"></canvas>
+              <p class="caption">Blue = push-left · Gray = coast · Orange = push-right</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── STEP 4: Test Model ── -->
+    <section id="section-test" class="card pipeline-section step-4 section-locked">
+      <div class="section-header">
+        <span class="step-badge">Step 4</span>
+        <h2>Test Model</h2>
+        <span id="testStatusBadge" class="section-badge">Waiting for Step 3</span>
+      </div>
+      <div class="section-body">
+        <div class="collect-controls">
+          <h3>Greedy Policy Playback</h3>
+          <div class="grid">
+            <label>
+              Test Episodes
+              <input id="testEpisodesTarget" type="number" min="1" value="20" />
+            </label>
+            <label>
+              Max Steps / Episode
+              <input id="testMaxSteps" type="number" min="1" value="200" />
+            </label>
+            <label>
+              Speed (steps/frame)
+              <input id="testStepsPerFrame" type="range" min="1" max="120" value="8" />
+              <span id="testStepsPerFrameLabel">8</span>
+            </label>
+          </div>
+          <div class="btn-row">
+            <button id="startTestBtn" disabled>▶ Run Test Episodes</button>
+            <button id="pauseTestBtn" class="btn-secondary" disabled>⏸ Pause</button>
+            <button id="resetTestBtn" class="btn-danger" disabled>↺ Reset</button>
+          </div>
+        </div>
+        <div class="collect-vis">
+          <canvas id="testCanvas" width="900" height="520"></canvas>
+          <p class="caption">Trained greedy policy playback</p>
+        </div>
+      </div>
+      <!-- Test metrics -->
+      <div class="metrics-panel">
+        <h3>Test Metrics</h3>
+        <div class="metrics-grid">
+          <div><span>Episodes</span><strong id="tEpisodes">0</strong></div>
+          <div><span>Successes</span><strong id="tSuccesses">0</strong></div>
+          <div><span>Success rate</span><strong id="tSuccessRate">0.00%</strong></div>
+          <div><span>Avg return</span><strong id="tAvgReturn">0.00</strong></div>
+          <div><span>Avg length</span><strong id="tAvgLength">0.00</strong></div>
+          <div><span>Cur step</span><strong id="tCurStep">0</strong></div>
+          <div><span>Cur return</span><strong id="tCurReturn">0.00</strong></div>
+          <div><span>Status</span><strong id="mTestStatus">Idle</strong></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./src/ui/app.js"></script>
+</body>
+
+</html>
